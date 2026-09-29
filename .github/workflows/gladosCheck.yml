@@ -121,10 +121,8 @@ jobs:
       if: always() && steps.today.outputs.skip == 'false'
       continue-on-error: true
       env:
-        WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
-        WECOM_APP_SECRET: ${{ secrets.WECOM_APP_SECRET }}
-        WECOM_AGENT_ID: ${{ secrets.WECOM_AGENT_ID }}
-        WECOM_TO_USER: ${{ secrets.WECOM_TO_USER }}
+        # JSON: {"corp_id":"...","app_secret":"...","agent_id":1000002,"to_user":"..."}
+        WECOM_CONFIG: ${{ secrets.WECOM_CONFIG }}
         CHECKIN_OUTCOME: ${{ steps.checkin.outcome }}
       run: |
         python3 - <<'PY'
@@ -134,10 +132,8 @@ jobs:
         import urllib.parse
         import urllib.request
 
-        required = ('WECOM_CORP_ID', 'WECOM_APP_SECRET', 'WECOM_AGENT_ID', 'WECOM_TO_USER')
-        missing = [name for name in required if not os.environ.get(name)]
-        if missing:
-            print('::warning::企业微信应用通知未配置完整: ' + ', '.join(missing))
+        if not os.environ.get('WECOM_CONFIG'):
+            print('::warning::未配置 WECOM_CONFIG，跳过企业微信应用通知。')
             sys.exit(0)
 
         def request(url, payload=None):
@@ -147,9 +143,13 @@ jobs:
                 return json.load(response)
 
         try:
+            config = json.loads(os.environ['WECOM_CONFIG'])
+            required = ('corp_id', 'app_secret', 'agent_id', 'to_user')
+            if not isinstance(config, dict) or any(not config.get(key) for key in required):
+                raise ValueError('WECOM_CONFIG 缺少必填字段')
             query = urllib.parse.urlencode({
-                'corpid': os.environ['WECOM_CORP_ID'],
-                'corpsecret': os.environ['WECOM_APP_SECRET'],
+                'corpid': config['corp_id'],
+                'corpsecret': config['app_secret'],
             })
             token_result = request('https://qyapi.weixin.qq.com/cgi-bin/gettoken?' + query)
             if token_result.get('errcode') != 0 or not token_result.get('access_token'):
@@ -160,9 +160,9 @@ jobs:
             run_url = (f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
                        f"{os.environ['GITHUB_RUN_ID']}")
             message = {
-                'touser': os.environ['WECOM_TO_USER'],
+                'touser': config['to_user'],
                 'msgtype': 'text',
-                'agentid': int(os.environ['WECOM_AGENT_ID']),
+                'agentid': int(config['agent_id']),
                 'text': {'content': f'GLaDOS 签到{status}\n运行记录：{run_url}'},
             }
             send_query = urllib.parse.urlencode({'access_token': token_result['access_token']})

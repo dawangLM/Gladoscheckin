@@ -102,9 +102,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests
 
-    # 执行 签到脚本
-    # 通知只靠退出码: 签到失败时脚本返回非 0 -> 作业变红 -> GitHub 发失败邮件。
+    # 执行签到脚本；失败时仍保留原有的非 0 退出码和 GitHub 失败邮件。
     - name: Running checkin
+      id: checkin
       if: steps.today.outputs.skip != 'true'
       run: |
         python checkin.py
@@ -114,6 +114,67 @@ jobs:
         GLADOS_VERBOSE: ${{ secrets.GLADOS_VERBOSE }}
         # GLaDOS 会校验签到请求的平台是否与登录浏览器一致, 平台不符会被判定为自动签到 (code 4)
         GLADOS_USER_AGENT: ${{ secrets.GLADOS_USER_AGENT }}
+
+    # 仅在当天实际需要签到时发送一次应用消息；签到失败也要执行通知。
+    # 通知故障不改变签到结果，避免成功签到被误判为失败并在下一槽位重复执行。
+    - name: 企业微信应用通知
+      if: always() && steps.today.outputs.skip == 'false'
+      continue-on-error: true
+      env:
+        WECOM_CORP_ID: ${{ secrets.WECOM_CORP_ID }}
+        WECOM_APP_SECRET: ${{ secrets.WECOM_APP_SECRET }}
+        WECOM_AGENT_ID: ${{ secrets.WECOM_AGENT_ID }}
+        WECOM_TO_USER: ${{ secrets.WECOM_TO_USER }}
+        CHECKIN_OUTCOME: ${{ steps.checkin.outcome }}
+      run: |
+        python3 - <<'PY'
+        import json
+        import os
+        import sys
+        import urllib.parse
+        import urllib.request
+
+        required = ('WECOM_CORP_ID', 'WECOM_APP_SECRET', 'WECOM_AGENT_ID', 'WECOM_TO_USER')
+        missing = [name for name in required if not os.environ.get(name)]
+        if missing:
+            print('::warning::企业微信应用通知未配置完整: ' + ', '.join(missing))
+            sys.exit(0)
+
+        def request(url, payload=None):
+            data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode('utf-8')
+            headers = {} if data is None else {'Content-Type': 'application/json; charset=utf-8'}
+            with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=15) as response:
+                return json.load(response)
+
+        try:
+            query = urllib.parse.urlencode({
+                'corpid': os.environ['WECOM_CORP_ID'],
+                'corpsecret': os.environ['WECOM_APP_SECRET'],
+            })
+            token_result = request('https://qyapi.weixin.qq.com/cgi-bin/gettoken?' + query)
+            if token_result.get('errcode') != 0 or not token_result.get('access_token'):
+                raise ValueError('获取 access_token 失败，errcode=' + str(token_result.get('errcode')))
+
+            outcome = os.environ.get('CHECKIN_OUTCOME')
+            status = '成功' if outcome == 'success' else '失败' if outcome == 'failure' else '未执行'
+            run_url = (f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                       f"{os.environ['GITHUB_RUN_ID']}")
+            message = {
+                'touser': os.environ['WECOM_TO_USER'],
+                'msgtype': 'text',
+                'agentid': int(os.environ['WECOM_AGENT_ID']),
+                'text': {'content': f'GLaDOS 签到{status}\n运行记录：{run_url}'},
+            }
+            send_query = urllib.parse.urlencode({'access_token': token_result['access_token']})
+            send_result = request('https://qyapi.weixin.qq.com/cgi-bin/message/send?' + send_query, message)
+            if send_result.get('errcode') != 0:
+                raise ValueError('发送应用消息失败，errcode=' + str(send_result.get('errcode')))
+            print('企业微信应用通知已发送。')
+        except Exception as exc:
+            # 异常可能包含带凭据的请求 URL，日志只输出异常类型。
+            print(f'::warning::企业微信应用通知失败（{type(exc).__name__}），请检查应用配置和运行日志。')
+            sys.exit(1)
+        PY
 
     # 签到失败时, 这两个收尾步骤也要照跑:
     # 用 if: always() 保证 keepalive 不会因为签到红了就被跳过, 否则工作流可能被

@@ -162,7 +162,6 @@ jobs:
 
             outcome = os.environ.get('CHECKIN_OUTCOME')
             status = '成功' if outcome == 'success' else '失败' if outcome == 'failure' else '未执行'
-            color = 'info' if outcome == 'success' else 'warning'
             now = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d %H:%M')
             run_url = (f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
                        f"{os.environ['GITHUB_RUN_ID']}")
@@ -177,37 +176,36 @@ jobs:
             )
 
             def clean(value):
-                # 服务端文字只作为普通文本展示，不允许插入 Markdown/HTML。
-                return re.sub(r'[<>&`*_\[\]()#|]', ' ', ' '.join(value.split()))[:80]
+                return ' '.join(value.split())[:80]
 
             header = [
-                '# GLaDOS 签到报告',
-                f'> 执行结果：<font color="{color}">{status}</font>',
-                f'> 北京时间：{now}',
+                'GLaDOS 签到报告',
+                f'执行结果：{status}',
+                f'北京时间：{now}',
             ]
             if counts:
-                header.append(f'> 站点统计：成功 {counts[1]} / 重复 {counts[3]} / 失败 {counts[2]}')
+                header.append(f'站点统计：成功 {counts[1]} / 重复 {counts[3]} / 失败 {counts[2]}')
             sections = []
             for position, earned, days, total, site_status, exchange in results:
                 index = int(position) - 1
                 account, domain = sites[index][:2] if index < len(sites) else (str(index // 2 + 1), '站点')
-                section = [f'### 账号 {account} · {domain}', f'> 签到：{clean(site_status)}']
+                section = [f'账号 {account} · {domain}', f'签到：{clean(site_status)}']
                 if days != 'None 天' or total != 'None 积分':
-                    section.append(f'> 获得积分：{clean(earned)} · 剩余：{clean(days)} · 总积分：{clean(total)}')
+                    section.append(f'获得积分：{clean(earned)} · 剩余：{clean(days)} · 总积分：{clean(total)}')
                 if exchange != '未兑换':
-                    section.append(f'> 兑换：{clean(exchange)}')
+                    section.append(f'兑换：{clean(exchange)}')
                 sections.append('\n'.join(section))
             if not sections:
-                sections = ['> 未生成签到明细，请查看运行日志。']
+                sections = ['未生成签到明细，请查看运行日志。']
 
-            footer = f'\n[查看完整运行日志]({run_url})'
+            footer = f'\n运行日志：{run_url}'
             pages = []
             current = '\n'.join(header)
             for section in sections:
                 candidate = current + '\n' + section
                 if len((candidate + footer).encode('utf-8')) > 2048:
                     pages.append(current + footer)
-                    current = '# GLaDOS 签到报告（续）\n' + section
+                    current = 'GLaDOS 签到报告（续）\n' + section
                 else:
                     current = candidate
             pages.append(current + footer)
@@ -215,14 +213,14 @@ jobs:
             for content in pages:
                 message = {
                     'touser': config['to_user'],
-                    'msgtype': 'markdown',
+                    'msgtype': 'text',
                     'agentid': int(config['agent_id']),
-                    'markdown': {'content': content},
+                    'text': {'content': content},
                 }
                 send_result = request('https://qyapi.weixin.qq.com/cgi-bin/message/send?' + send_query, message)
                 if send_result.get('errcode') != 0:
                     raise ValueError('发送应用消息失败，errcode=' + str(send_result.get('errcode')))
-            print(f'企业微信 Markdown 通知已发送，共 {len(pages)} 条。')
+            print(f'企业微信文字通知已发送，共 {len(pages)} 条。')
         except Exception as exc:
             # 异常可能包含带凭据的请求 URL，日志只输出异常类型。
             print(f'::warning::企业微信应用通知失败（{type(exc).__name__}），请检查应用配置和运行日志。')
